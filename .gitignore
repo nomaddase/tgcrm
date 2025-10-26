@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+.env
+.env.*
+*.log
+.idea/
+.vscode/
+.mypy_cache/
+.pytest_cache/
+.cache/
+celerybeat-schedule
+
+# OS specific
+.DS_Store
+Thumbs.db
