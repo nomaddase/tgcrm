@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -16,6 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from tgcrm.db.statuses import DealStatus
 
 class Base(DeclarativeBase):
     """Base declarative class for SQLAlchemy models."""
@@ -36,9 +38,11 @@ class Manager(Base):
 
 class Client(Base):
     __tablename__ = "clients"
+    __table_args__ = (Index("ix_client_phone_suffix", "phone_suffix"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    phone_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(20), unique=True, nullable=False, index=True)
+    phone_suffix: Mapped[str] = mapped_column(String(4), nullable=False)
     name: Mapped[Optional[str]] = mapped_column(String(255))
     city: Mapped[Optional[str]] = mapped_column(String(255))
 
@@ -47,11 +51,12 @@ class Client(Base):
 
 class Deal(Base):
     __tablename__ = "deals"
+    __table_args__ = (Index("ix_deal_manager_status", "manager_id", "status"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     client_id: Mapped[int] = mapped_column(ForeignKey("clients.id", ondelete="CASCADE"))
     manager_id: Mapped[int] = mapped_column(ForeignKey("managers.id", ondelete="CASCADE"))
-    status: Mapped[str] = mapped_column(String(50), nullable=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default=DealStatus.NEW.value)
     amount: Mapped[Optional[Numeric]] = mapped_column(Numeric(12, 2))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     last_interaction_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

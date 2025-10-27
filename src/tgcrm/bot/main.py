@@ -5,8 +5,13 @@ import asyncio
 import logging
 
 from tgcrm.bot.bot_factory import create_bot, create_dispatcher
+from aiogram import Bot, Dispatcher
+
+from tgcrm.bot.handlers import client as client_handlers
+from tgcrm.bot.handlers import deal as deal_handlers
 from tgcrm.bot.handlers import settings as settings_handlers
 from tgcrm.bot.handlers import start as start_handlers
+from tgcrm.bot.handlers import supervisor as supervisor_handlers
 from tgcrm.config import get_settings
 from tgcrm.logging import configure_logging
 
@@ -33,11 +38,22 @@ def _ensure_token_present() -> None:
 async def main() -> None:
     _ensure_token_present()
     bot = create_bot()
-    dispatcher = create_dispatcher(start_handlers.router, settings_handlers.router)
+    dispatcher = create_dispatcher(
+        start_handlers.router,
+        settings_handlers.router,
+        client_handlers.router,
+        deal_handlers.router,
+        supervisor_handlers.router,
+    )
     try:
+        await on_startup(dispatcher)
         await dispatcher.start_polling(bot)
     finally:
         await bot.session.close()
+
+
+async def on_startup(dispatcher: Dispatcher) -> None:  # pragma: no cover - integration hook
+    logger.info("Dispatcher %s is starting", dispatcher)
 
 
 if __name__ == "__main__":

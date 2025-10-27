@@ -35,11 +35,7 @@ async def init_models() -> None:
     """Create database tables based on the SQLAlchemy models."""
 
     async with engine.begin() as connection:
-        await connection.run_sync(
-            lambda sync_connection: models.Base.metadata.create_all(sync_connection, checkfirst=True)
-                bind=sync_connection, checkfirst=True
-            )
-        )
+        await connection.run_sync(models.Base.metadata.create_all, checkfirst=True)
     logger.info("Database schema ensured.")
 
 
