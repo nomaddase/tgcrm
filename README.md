@@ -68,10 +68,8 @@ python -m tgcrm.bot.main
 
 To initialize the database schema during development you can run:
 
-```python
-import asyncio
-from tgcrm.db.session import init_models
-asyncio.run(init_models())
+```bash
+python -m tgcrm.db.manage init-db
 ```
 
 ### 3. Running with Docker Compose
@@ -108,6 +106,18 @@ The provided Dockerfile and Compose configuration are suitable for containerized
 2. Connects to the target server via SSH.
 3. Updates the `docker-compose.yml` file if required.
 4. Pulls the latest image and restarts the stack with `docker compose up -d`.
+
+### PostgreSQL Backups
+
+For automated backups configure a cron job on the host that executes `pg_dump` and rotates the resulting files. A simple example that keeps daily backups for a week:
+
+```cron
+0 3 * * * docker compose -f /opt/tgcrm/docker-compose.yml exec -T postgres \
+  pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB" > /var/backups/tgcrm-$(date +"\%Y\%m\%d").sql
+find /var/backups -name 'tgcrm-*.sql' -mtime +7 -delete
+```
+
+Adjust paths and retention policies to match your infrastructure and make sure the backup directory is protected and included in your server-wide backup routine.
 
 ## License
 

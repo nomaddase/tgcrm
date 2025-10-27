@@ -1,2 +1,3 @@
 """Telegram CRM bot package."""
-__all__ = []
+
+__all__: list[str] = []

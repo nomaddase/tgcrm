@@ -33,7 +33,10 @@ def _is_within_working_hours(timestamp: datetime) -> bool:
 
 async def _send_due_reminders() -> None:
     async with AsyncSessionFactory() as session:
-        query = select(Reminder).where(Reminder.is_sent.is_(False), Reminder.remind_at <= datetime.utcnow())
+        query = select(Reminder).where(
+            Reminder.is_sent.is_(False),
+            Reminder.remind_at <= datetime.utcnow(),
+        )
         result = await session.execute(query)
         reminders = result.scalars().all()
         for reminder in reminders:

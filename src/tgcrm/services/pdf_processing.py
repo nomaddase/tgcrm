@@ -30,7 +30,7 @@ def extract_text_from_pdf(pdf_path: Path) -> str:
 
         # Fallback to OCR when the page has no embedded text.
         pix = page.get_pixmap()
-        image = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+        image = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
         texts.append(pytesseract.image_to_string(image))
     return "\n".join(texts)
 
@@ -42,12 +42,17 @@ def parse_invoice(pdf_path: Path) -> InvoiceData:
     total_amount = 0.0
     line_items: List[Tuple[int, str]] = []
 
-    for line in text.splitlines():
-        line = line.strip()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
         if not line:
             continue
         if line.lower().startswith("итого") or "total" in line.lower():
-            parts = [part for part in line.replace(",", ".").split() if part.replace(".", "").isdigit()]
+            normalized_parts = line.replace(",", ".").split()
+            parts = [
+                part
+                for part in normalized_parts
+                if part.replace(".", "").isdigit()
+            ]
             if parts:
                 total_amount = float(parts[-1])
         elif line[0:1].isdigit():
