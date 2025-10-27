@@ -4,14 +4,15 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from tgcrm.bot.bot_factory import create_bot, create_dispatcher
 from aiogram import Bot, Dispatcher
-
-from tgcrm.bot.handlers import client as client_handlers
-from tgcrm.bot.handlers import deal as deal_handlers
-from tgcrm.bot.handlers import settings as settings_handlers
-from tgcrm.bot.handlers import start as start_handlers
-from tgcrm.bot.handlers import supervisor as supervisor_handlers
+from tgcrm.bot.bot_factory import create_bot, create_dispatcher
+from tgcrm.bot.handlers import (
+    start as start_handlers,
+    client as client_handlers,
+    deal as deal_handlers,
+    settings as settings_handlers,
+    supervisor as supervisor_handlers,
+)
 from tgcrm.config import get_settings
 from tgcrm.logging import configure_logging
 
@@ -28,11 +29,15 @@ def _ensure_token_present() -> None:
 
     if not settings.telegram.bot_token.strip():
         message = (
-            "TELEGRAM_BOT_TOKEN is empty. Please provide a valid token in the environment before "
-            "starting the bot."
+            "TELEGRAM_BOT_TOKEN is empty. Please provide a valid token in the environment before starting the bot."
         )
         logger.error(message)
         raise RuntimeError(message)
+
+
+async def on_startup(dispatcher: Dispatcher) -> None:
+    """Hook that runs when the bot starts polling."""
+    logger.info("🤖 Bot successfully started and polling Telegram API.")
 
 
 async def main() -> None:
@@ -45,15 +50,18 @@ async def main() -> None:
         deal_handlers.router,
         supervisor_handlers.router,
     )
+
+    # Правильный хук запуска
+    dispatcher.startup.register(on_startup)
+
+    logger.info("🚀 Starting Telegram polling...")
     try:
-        await on_startup(dispatcher)
         await dispatcher.start_polling(bot)
+    except Exception as e:
+        logger.exception("Polling failed: %s", e)
     finally:
         await bot.session.close()
-
-
-async def on_startup(dispatcher: Dispatcher) -> None:  # pragma: no cover - integration hook
-    logger.info("Dispatcher %s is starting", dispatcher)
+        logger.info("Bot session closed.")
 
 
 if __name__ == "__main__":
