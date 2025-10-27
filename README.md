@@ -69,8 +69,11 @@ python -m tgcrm.bot.main
 To initialize the database schema during development you can run:
 
 ```bash
-python -m tgcrm.db.manage init-db
+python manage.py init-db
 ```
+
+The command includes automatic retries while it waits for PostgreSQL to become available. Use
+`--max-attempts` or `--retry-backoff` to fine-tune the retry strategy when needed.
 
 ### 3. Running with Docker Compose
 
@@ -84,6 +87,12 @@ The stack includes:
 - **beat** – Celery beat scheduler for periodic tasks.
 - **postgres** – PostgreSQL 15 with persistent volume.
 - **redis** – Redis 7 used as Celery broker and backend.
+
+Before starting the stack for the first time, initialize the database schema from the container:
+
+```bash
+docker compose run --rm bot python manage.py init-db
+```
 
 ### 4. Background Jobs
 
@@ -101,11 +110,45 @@ Celery tasks are defined in `tgcrm.tasks`. The `beat` service can be configured 
 
 ## Deployment
 
-The provided Dockerfile and Compose configuration are suitable for containerized deployments. To automate delivery you can implement a GitHub Actions workflow that:
-1. Builds and pushes the Docker image.
-2. Connects to the target server via SSH.
-3. Updates the `docker-compose.yml` file if required.
-4. Pulls the latest image and restarts the stack with `docker compose up -d`.
+The repository contains `Dockerfile.stage` for production builds that omit development dependencies and volume mounts. Build the image locally or in CI with:
+
+```bash
+docker build -f Dockerfile.stage -t your-registry.example.com/tgcrm:latest .
+```
+
+After publishing the image, deploy on the target host with Docker Compose. The included `Makefile` provides helper commands:
+
+```bash
+make deploy
+```
+
+The recipe performs `docker compose down --remove-orphans`, pulls the latest images, starts the stack in the background, and tails logs for a quick health check. Run `make init-db` to execute the database initialization command inside the `bot` container when preparing a fresh environment.
+
+### Example `.env`
+
+```
+TELEGRAM_BOT_TOKEN=1234567890:example-telegram-token
+TELEGRAM_PARSE_MODE=HTML
+OPENAI_API_KEY=sk-example-openai-token
+OPENAI_MODEL=gpt-4o
+OPENAI_TEMPERATURE=0.4
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=tgcrm
+DB_ECHO=0
+REDIS_URL=redis://redis:6379/0
+LOG_LEVEL=INFO
+WORKDAY_START=10:00
+WORKDAY_END=17:00
+LUNCH_START=13:00
+LUNCH_END=14:00
+SUPERVISOR_PASSWORD=878707Server
+PROACTIVE_EXCLUDED_STATUSES=долгосрочная,отмененная,оплаченная
+```
+
+Adjust secrets before deploying to production, preferably via a secret manager or CI-provided environment variables.
 
 ### PostgreSQL Backups
 
