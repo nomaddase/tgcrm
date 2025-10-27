@@ -2,23 +2,30 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List, Optional
+from typing import Any
 
-from dotenv import load_dotenv
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-load_dotenv()
+
+class AppBaseSettings(BaseSettings):
+    """Base settings with shared configuration."""
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
-class TelegramSettings(BaseSettings):
+class TelegramSettings(AppBaseSettings):
     """Settings related to the Telegram bot."""
 
     bot_token: str = Field(..., validation_alias="TELEGRAM_BOT_TOKEN")
     parse_mode: str = Field("HTML", validation_alias="TELEGRAM_PARSE_MODE")
 
 
-class OpenAISettings(BaseSettings):
+class OpenAISettings(AppBaseSettings):
     """Settings for communicating with the OpenAI API."""
 
     api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
@@ -32,7 +39,7 @@ class OpenAISettings(BaseSettings):
         return value
 
 
-class DatabaseSettings(BaseSettings):
+class DatabaseSettings(AppBaseSettings):
     """Database connection configuration."""
 
     host: str = Field("localhost", validation_alias="POSTGRES_HOST")
@@ -53,7 +60,7 @@ class DatabaseSettings(BaseSettings):
         return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
 
 
-class RedisSettings(BaseSettings):
+class RedisSettings(AppBaseSettings):
     """Redis connection settings used by Celery and reminders."""
 
     host: str = Field("localhost", validation_alias="REDIS_HOST")
@@ -65,7 +72,10 @@ class RedisSettings(BaseSettings):
         return f"redis://{self.host}:{self.port}/{self.db}"
 
 
-class BotBehaviourSettings(BaseSettings):
+DEFAULT_PROACTIVE_EXCLUDED_STATUSES = ["долгосрочная", "отмененная", "оплаченная"]
+
+
+class BotBehaviourSettings(AppBaseSettings):
     """Runtime configuration for bot behaviour rules."""
 
     workday_start: str = Field("10:00", validation_alias="WORKDAY_START")
@@ -73,23 +83,24 @@ class BotBehaviourSettings(BaseSettings):
     lunch_start: str = Field("13:00", validation_alias="LUNCH_START")
     lunch_end: str = Field("14:00", validation_alias="LUNCH_END")
     supervisor_password: str = Field("878707Server", validation_alias="SUPERVISOR_PASSWORD")
-    proactive_excluded_statuses: List[str] | str = Field(
-        default_factory=lambda: ["долгосрочная", "отмененная", "оплаченная"],
+    proactive_excluded_statuses: list[str] = Field(
+        default_factory=lambda: DEFAULT_PROACTIVE_EXCLUDED_STATUSES.copy(),
         validation_alias="PROACTIVE_EXCLUDED_STATUSES",
     )
 
     @field_validator("proactive_excluded_statuses", mode="before")
-    def parse_statuses(cls, value: Optional[List[str] | str]) -> List[str]:
+    def parse_statuses(cls, value: Any) -> list[str]:
         if value is None:
-            return ["долгосрочная", "отмененная", "оплаченная"]
+            return DEFAULT_PROACTIVE_EXCLUDED_STATUSES.copy()
         if isinstance(value, str):
-            return [status.strip() for status in value.split(",") if status.strip()]
+            cleaned = [status.strip() for status in value.split(",") if status.strip()]
+            return cleaned or DEFAULT_PROACTIVE_EXCLUDED_STATUSES.copy()
         if isinstance(value, list):
             return value
         raise TypeError("proactive_excluded_statuses must be a list or a comma separated string")
 
 
-class Settings(BaseSettings):
+class Settings(AppBaseSettings):
     """Full application configuration."""
 
     telegram: TelegramSettings = Field(default_factory=TelegramSettings)
@@ -98,7 +109,11 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     behaviour: BotBehaviourSettings = Field(default_factory=BotBehaviourSettings)
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
 
 
 @lru_cache()
