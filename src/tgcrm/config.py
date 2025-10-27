@@ -4,7 +4,8 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import BaseSettings, Field, validator
+from pydantic import Field, validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class TelegramSettings(BaseSettings):
@@ -91,6 +92,8 @@ class Settings(BaseSettings):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     behaviour: BotBehaviourSettings = Field(default_factory=BotBehaviourSettings)
+
+    model_config = SettingsConfigDict(env_file="/app/.env", env_file_encoding="utf-8")
 
 
 @lru_cache()
