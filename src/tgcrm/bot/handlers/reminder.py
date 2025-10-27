@@ -9,7 +9,7 @@ from tgcrm.bot.nlu_parser import extract_entities
 from tgcrm.bot.utils.history import delete_message_safe, purge_history, remember_message
 from tgcrm.db.models import Deal
 from tgcrm.db.session import get_session
-from tgcrm.services.ai_assistant import get_ai_assistant
+from tgcrm.services.ai_assistant import build_reminder_tip
 from tgcrm.services.deals import create_reminder, ensure_manager
 
 from .deal import _get_active_deal as _get_active_deal_id, _load_deal_for_manager
@@ -46,9 +46,8 @@ async def handle_reminder(message: Message, state: FSMContext) -> None:
             return
         await create_reminder(session, deal, remind_at=remind_at)
 
-    assistant = get_ai_assistant()
     reminder_text = entities.get("reminder_text") or ""
-    tip = await assistant.build_reminder_tip(reminder_text)
+    tip = await build_reminder_tip(reminder_text)
 
     response = (
         "⏰ Напоминание создано.\n"
