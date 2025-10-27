@@ -5,16 +5,30 @@ from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from tgcrm.config import get_settings
+from tgcrm.db.models import Deal, InvoiceItem
+from tgcrm.db.session import AsyncSessionFactory
+from tgcrm.services.settings import get_setting
 
 _settings = get_settings()
-_client = AsyncOpenAI(api_key=_settings.openai.api_key)
+
+
+async def _resolve_client() -> AsyncOpenAI:
+    override: str | None = None
+    try:
+        async with AsyncSessionFactory() as session:
+            override = await get_setting(session, "openai_api_key")
+    except Exception:  # pragma: no cover - fallback when DB is unavailable
+        override = None
+    api_key = override or _settings.openai.api_key
+    return AsyncOpenAI(api_key=api_key)
 
 
 @retry(wait=wait_exponential(multiplier=1, min=1, max=10), stop=stop_after_attempt(3))
 async def get_advice(prompt: str) -> str:
     """Send a prompt to the OpenAI chat completion endpoint and return the answer."""
 
-    response = await _client.chat.completions.create(
+    client = await _resolve_client()
+    response = await client.chat.completions.create(
         model=_settings.openai.model,
         messages=[
             {"role": "system", "content": "You are an expert sales assistant."},
@@ -48,4 +62,53 @@ async def build_product_consultation_prompt(item_description: str, question: str
     return await get_advice(prompt)
 
 
-__all__ = ["get_advice", "summarize_interaction", "build_product_consultation_prompt"]
+async def build_advice_for_interaction(deal: Deal, interaction_type: str) -> str:
+    """Return a suggestion for the next interaction based on history."""
+
+    history_parts = []
+    sorted_history = sorted(deal.interactions, key=lambda item: item.created_at or 0)
+    for interaction in sorted_history[-5:]:
+        fragment = (
+            f"[{interaction.created_at:%Y-%m-%d %H:%M}] {interaction.type}: {interaction.manager_summary}"
+        )
+        history_parts.append(fragment)
+
+    history = "\n".join(history_parts) or "No previous interactions."
+    prompt = (
+        "Act as an experienced sales supervisor.\n"
+        "Given the following interaction history and the requested channel, suggest a short tip.\n"
+        f"Channel: {interaction_type}\n"
+        f"History:\n{history}\n"
+    )
+    return await get_advice(prompt)
+
+
+async def answer_item_question(deal: Deal, line_no: int, question: str) -> str:
+    """Return an AI generated answer about a specific invoice line."""
+
+    latest_invoice = None
+    if deal.invoices:
+        latest_invoice = sorted(deal.invoices, key=lambda inv: inv.id)[-1]
+
+    if not latest_invoice:
+        raise ValueError("У сделки нет связанных счетов")
+
+    matching_item: InvoiceItem | None = None
+    for item in latest_invoice.items:
+        if item.line_number == line_no:
+            matching_item = item
+            break
+
+    if not matching_item:
+        raise ValueError("Позиция с указанным номером строки не найдена")
+
+    return await build_product_consultation_prompt(matching_item.item_description, question)
+
+
+__all__ = [
+    "answer_item_question",
+    "build_advice_for_interaction",
+    "build_product_consultation_prompt",
+    "get_advice",
+    "summarize_interaction",
+]
