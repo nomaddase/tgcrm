@@ -1,15 +1,22 @@
 """Database engine and session management."""
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from tgcrm.config import get_settings
 from tgcrm.db import models
 
 _settings = get_settings()
+logger = logging.getLogger(__name__)
 
 engine: AsyncEngine = create_async_engine(
     _settings.database.async_dsn,
@@ -28,7 +35,12 @@ async def init_models() -> None:
     """Create database tables based on the SQLAlchemy models."""
 
     async with engine.begin() as connection:
-        await connection.run_sync(models.Base.metadata.create_all)
+        await connection.run_sync(
+            lambda sync_connection: models.Base.metadata.create_all(
+                bind=sync_connection, checkfirst=True
+            )
+        )
+    logger.info("Database schema ensured.")
 
 
 @asynccontextmanager
