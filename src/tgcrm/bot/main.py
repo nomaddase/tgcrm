@@ -16,6 +16,7 @@ from tgcrm.bot.handlers import (
 )
 from tgcrm.config import get_settings
 from tgcrm.logging import configure_logging
+from tgcrm.services.ai_assistant import create_ai_assistant
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ async def on_startup(dispatcher: Dispatcher) -> None:
 async def main() -> None:
     _ensure_token_present()
     bot = create_bot()
+    ai_assistant = await create_ai_assistant()
     dispatcher = create_dispatcher(
         start_handlers.router,
         settings_handlers.router,
@@ -52,6 +54,10 @@ async def main() -> None:
         supervisor_handlers.router,
         assistant_handlers.router,
     )
+    if not hasattr(dispatcher, "workflow_data"):
+        dispatcher.workflow_data = {}  # type: ignore[attr-defined]
+    dispatcher.workflow_data["ai_assistant"] = ai_assistant  # type: ignore[index]
+    setattr(bot, "ai_assistant", ai_assistant)
 
     # Правильный хук запуска (учитываем тестовые заглушки)
     startup_registered = False

@@ -1,180 +1,188 @@
-"""High level helpers that talk to the OpenAI API with caching support."""
+"""Unified interface for communicating with the OpenAI ChatGPT API."""
 from __future__ import annotations
 
-import hashlib
 import json
-from typing import Any, Awaitable, Callable, Dict, List
+from typing import Any, Iterable
 
-import redis.asyncio as aioredis
+from aiogram import Dispatcher
 from openai import AsyncOpenAI
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from tgcrm.config import get_settings
+from tgcrm.config import Settings, get_settings
 from tgcrm.db.session import AsyncSessionFactory
 from tgcrm.services.settings import get_setting
 
-CACHE_TTL_SECONDS = 6 * 60 * 60
-
-_settings = get_settings()
-_redis_client: aioredis.Redis | None = None
-
-
-async def _get_redis() -> aioredis.Redis | None:
-    """Return a lazily initialised Redis client or ``None`` if unavailable."""
-
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-
-    try:
-        _redis_client = aioredis.from_url(
-            _settings.redis.dsn,
-            encoding="utf-8",
-            decode_responses=True,
-        )
-    except Exception:  # pragma: no cover - connection errors handled gracefully
-        _redis_client = None
-    return _redis_client
-
-
-async def _resolve_openai_client() -> AsyncOpenAI:
-    """Return an AsyncOpenAI client taking DB overrides into account."""
-
-    override: str | None = None
-    try:
-        async with AsyncSessionFactory() as session:
-            override = await get_setting(session, "openai_api_key")
-    except Exception:  # pragma: no cover - DB might be offline during tests
-        override = None
-
-    api_key = override or _settings.openai.api_key
-    return AsyncOpenAI(api_key=api_key)
-
-
-def _build_cache_key(messages: List[Dict[str, str]]) -> str:
-    payload = json.dumps(messages, sort_keys=True, ensure_ascii=False)
-    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    return f"ai:{digest}"
-
-
-async def _with_cache(key: str, builder: Callable[[], Awaitable[str]]) -> str:
-    redis = await _get_redis()
-    if redis is not None:
-        cached = await redis.get(key)
-        if cached:
-            return cached
-
-    result = await builder()
-    if redis is not None:
-        try:
-            await redis.setex(key, CACHE_TTL_SECONDS, result)
-        except Exception:  # pragma: no cover - redis failures should not break flows
-            pass
-    return result
-
-
-@retry(wait=wait_exponential(multiplier=1, min=1, max=10), stop=stop_after_attempt(3))
-async def _chat(messages: List[Dict[str, str]]) -> str:
-    """Send a conversation to OpenAI and return the assistant response."""
-
-    client = await _resolve_openai_client()
-    response = await client.chat.completions.create(
-        model=_settings.openai.model,
-        messages=messages,
-        temperature=_settings.openai.temperature,
-    )
-    return response.choices[0].message.content or ""
-
-
-async def _ask(messages: List[Dict[str, str]]) -> str:
-    cache_key = _build_cache_key(messages)
-    return await _with_cache(cache_key, lambda: _chat(messages))
-
-
-AI_PROMPTS: Dict[str, str] = {
-    "deal_advice": (
-        "На основе истории взаимодействий и статуса сделки предложи менеджеру "
-        "оптимальный следующий шаг."
+AI_PROMPTS = {
+    "client_summary": (
+        "Ты — помощник отдела продаж. На основе имени, города и интереса клиента "
+        "создай краткое описание профиля клиента и предложи шаг для начала диалога."
     ),
-    "client_summary": "Сформулируй краткое описание клиента по данным имени, города и интереса.",
-    "invoice_summary": "Опиши, что содержится в счёте и как можно использовать это для допродаж.",
-    "reminder_tip": "Составь совет для менеджера при выполнении напоминания.",
-    "status_change_tip": "Определи, что сделать после смены статуса, чтобы удержать клиента.",
+    "deal_followup": (
+        "Проанализируй историю общения и статус сделки, предложи менеджеру лучший "
+        "следующий шаг для закрытия."
+    ),
+    "invoice_summary": (
+        "Ты — аналитик. На основе содержимого счёта опиши, что клиент заказал, и "
+        "предложи товары/услуги для допродажи."
+    ),
+    "reminder_tip": (
+        "Создай короткий текст напоминания менеджеру о следующем контакте с клиентом, "
+        "добавь совет по контексту."
+    ),
+    "supervisor_report": (
+        "Проанализируй сделки отдела, создай отчёт по количеству и суммам, добавь "
+        "рекомендации по воронке."
+    ),
 }
 
-SYSTEM_PROMPT = (
-    "Ты — опытный ассистент по продажам. Отвечай по существу, лаконично и на русском "
-    "языке, чтобы помочь менеджеру по продажам сделать следующий шаг."
-)
+ROLE_SYSTEM_MESSAGES = {
+    "sales_assistant": (
+        "Ты — продвинутый AI-ассистент менеджера по продажам. Отвечай кратко, по делу "
+        "и на русском языке."
+    ),
+    "analyst": (
+        "Ты — финансовый аналитик, который помогает менеджеру продаж делать выводы по "
+        "документам и цифрам."
+    ),
+    "supervisor": (
+        "Ты — AI-аналитик для руководителя отдела продаж. Формируй отчёты и советы на "
+        "основе предоставленных данных."
+    ),
+}
+
+TEMPERATURE = 0.4
+MAX_TOKENS = 800
+MODEL_NAME = "gpt-4o"
 
 
-async def get_ai_advice(context: str) -> str:
-    """Return a generic piece of advice based on the provided context."""
-
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": context.strip()},
-    ]
-    return await _ask(messages)
-
-
-async def summarize_invoice(pdf_text: str) -> str:
-    context = f"{AI_PROMPTS['invoice_summary']}\n\n{pdf_text.strip()}"
-    return await get_ai_advice(context)
-
-
-async def generate_followup_message(history: str) -> str:
-    context = f"{AI_PROMPTS['deal_advice']}\n\nИстория:\n{history.strip()}"
-    return await get_ai_advice(context)
-
-
-async def generate_supervisor_summary(db_snapshot: str) -> str:
-    context = (
-        "Ты готовишь сводку для руководителя отдела продаж. Проанализируй данные "
-        "ниже и выдели тренды, риски и рекомендации.\n\n"
-        f"Данные:\n{db_snapshot.strip()}"
+@retry(wait=wait_exponential(multiplier=1, min=1, max=8), stop=stop_after_attempt(3))
+async def _create_completion(client: AsyncOpenAI, messages: list[dict[str, str]]) -> str:
+    response = await client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        temperature=TEMPERATURE,
+        max_tokens=MAX_TOKENS,
     )
-    return await get_ai_advice(context)
+    return (response.choices[0].message.content or "").strip()
 
 
-async def build_client_summary(name: str | None, city: str | None, interest: str) -> str:
-    payload = (
-        f"Имя: {name or 'не указано'}\n"
-        f"Город: {city or 'не указан'}\n"
-        f"Интерес: {interest or 'не указан'}"
-    )
-    context = f"{AI_PROMPTS['client_summary']}\n\n{payload}"
-    return await get_ai_advice(context)
+async def _resolve_api_key(settings: Settings) -> str:
+    override: str | None = None
+    try:  # pragma: no cover - DB overrides are optional
+        async with AsyncSessionFactory() as session:
+            override = await get_setting(session, "openai_api_key")
+    except Exception:
+        override = None
+    return override or settings.openai.api_key
 
 
-async def build_deal_advice(history: str, status: str) -> str:
-    context = (
-        f"{AI_PROMPTS['deal_advice']}\n\nСтатус: {status}\nИстория:\n{history.strip() or 'Нет взаимодействий'}"
-    )
-    return await get_ai_advice(context)
+class AIAssistant:
+    """High level helper around the OpenAI chat completions API."""
+
+    def __init__(self, client: AsyncOpenAI):
+        self._client = client
+
+    async def get_ai_advice(self, context: str, role: str = "sales_assistant") -> str:
+        system_message = ROLE_SYSTEM_MESSAGES.get(role, ROLE_SYSTEM_MESSAGES["sales_assistant"])
+        messages = [
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": context.strip()},
+        ]
+        return await _create_completion(self._client, messages)
+
+    async def summarize_invoice(self, text: str) -> str:
+        context = f"{AI_PROMPTS['invoice_summary']}\n\n{text.strip()}"
+        return await self.get_ai_advice(context, role="analyst")
+
+    async def generate_followup_message(self, history: Iterable[Any], status: str) -> str:
+        history_lines: list[str] = []
+        for item in history:
+            if isinstance(item, str):
+                history_lines.append(item.strip())
+            elif isinstance(item, dict):
+                parts = [
+                    str(item.get("time") or item.get("created_at") or item.get("date") or ""),
+                    str(item.get("type") or item.get("interaction_type") or ""),
+                    str(item.get("summary") or item.get("text") or item.get("details") or ""),
+                ]
+                history_lines.append(" ".join(part for part in parts if part).strip())
+            else:
+                history_lines.append(str(item))
+        history_payload = "\n".join(line for line in history_lines if line)
+        context = (
+            f"{AI_PROMPTS['deal_followup']}\n\n"
+            f"Текущий статус: {status or 'не указан'}.\n"
+            f"История:\n{history_payload or 'нет взаимодействий'}"
+        )
+        return await self.get_ai_advice(context)
+
+    async def generate_supervisor_summary(self, deals: Iterable[Any] | dict[str, Any]) -> str:
+        if isinstance(deals, dict):
+            payload = json.dumps(deals, ensure_ascii=False)
+        else:
+            payload = json.dumps(list(deals), ensure_ascii=False)
+        context = f"{AI_PROMPTS['supervisor_report']}\n\nДанные:\n{payload}"
+        return await self.get_ai_advice(context, role="supervisor")
+
+    async def summarize_client_profile(self, client_data: dict[str, Any]) -> str:
+        formatted = json.dumps(client_data, ensure_ascii=False)
+        context = f"{AI_PROMPTS['client_summary']}\n\n{formatted}"
+        return await self.get_ai_advice(context)
+
+    async def build_reminder_tip(self, reminder_text: str) -> str:
+        context = f"{AI_PROMPTS['reminder_tip']}\n\nЗапрос: {reminder_text.strip()}"
+        return await self.get_ai_advice(context)
 
 
-async def build_reminder_tip(reminder_text: str) -> str:
-    context = f"{AI_PROMPTS['reminder_tip']}\n\nНапоминание: {reminder_text.strip()}"
-    return await get_ai_advice(context)
+async def create_ai_assistant(settings: Settings | None = None) -> AIAssistant:
+    resolved_settings = settings or get_settings()
+    api_key = await _resolve_api_key(resolved_settings)
+    client = AsyncOpenAI(api_key=api_key)
+    return AIAssistant(client=client)
 
 
-async def build_status_tip(status: str, client_overview: str) -> str:
-    context = (
-        f"{AI_PROMPTS['status_change_tip']}\n\nНовый статус: {status}\n"
-        f"Контекст:\n{client_overview.strip()}"
-    )
-    return await get_ai_advice(context)
+def get_ai_assistant() -> AIAssistant:
+    dispatcher = Dispatcher.get_current()
+    assistant = dispatcher.workflow_data.get("ai_assistant")
+    if not isinstance(assistant, AIAssistant):  # pragma: no cover - runtime guard
+        raise RuntimeError("AI assistant is not initialised in dispatcher context")
+    return assistant
+
+
+async def get_ai_advice(context: str, role: str = "sales_assistant") -> str:
+    assistant = get_ai_assistant()
+    return await assistant.get_ai_advice(context, role=role)
+
+
+async def summarize_invoice(text: str) -> str:
+    assistant = get_ai_assistant()
+    return await assistant.summarize_invoice(text)
+
+
+async def generate_followup_message(history: Iterable[Any], status: str) -> str:
+    assistant = get_ai_assistant()
+    return await assistant.generate_followup_message(history, status)
+
+
+async def generate_supervisor_summary(deals: Iterable[Any] | dict[str, Any]) -> str:
+    assistant = get_ai_assistant()
+    return await assistant.generate_supervisor_summary(deals)
+
+
+async def summarize_client_profile(client_data: dict[str, Any]) -> str:
+    assistant = get_ai_assistant()
+    return await assistant.summarize_client_profile(client_data)
 
 
 __all__ = [
     "AI_PROMPTS",
-    "build_client_summary",
-    "build_deal_advice",
-    "build_reminder_tip",
-    "build_status_tip",
+    "AIAssistant",
+    "create_ai_assistant",
     "generate_followup_message",
     "generate_supervisor_summary",
     "get_ai_advice",
+    "get_ai_assistant",
+    "summarize_client_profile",
     "summarize_invoice",
 ]
+
