@@ -1,23 +1,23 @@
 FROM python:3.11-slim
 
-ENV PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONPATH=/app/src
-
 WORKDIR /app
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential tesseract-ocr libtesseract-dev \
+# Устанавливаем системные зависимости
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tesseract-ocr \
+    libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md /app/
-COPY entrypoint.sh /app/entrypoint.sh
+# Копируем проект
+COPY pyproject.toml poetry.lock* ./
 COPY src /app/src
+COPY manage.py /app/manage.py
 
-RUN chmod +x /app/entrypoint.sh
+ENV PYTHONPATH=/app/src
 
-RUN pip install --upgrade pip \
-    && pip install -e .[dev]
+# Устанавливаем зависимости
+RUN pip install --upgrade pip && \
+    pip install poetry && \
+    poetry install --no-root --only main
 
-ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["python", "-m", "tgcrm.bot.main"]
