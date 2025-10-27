@@ -75,7 +75,11 @@ async def get_active_deal_by_phone_suffix(
     suffix = phone_suffix[-4:]
     query = (
         select(Deal)
-        .options(joinedload(Deal.client))
+        .options(
+            joinedload(Deal.client),
+            joinedload(Deal.interactions),
+            joinedload(Deal.invoices).joinedload(Invoice.items),
+        )
         .join(Deal.client)
         .where(Client.phone_suffix == suffix, Deal.manager_id == manager.id)
         .order_by(Deal.created_at.desc())

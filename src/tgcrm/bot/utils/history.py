@@ -6,6 +6,7 @@ from typing import Iterable, List
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
+from aiogram.types import Message
 
 
 HISTORY_KEY = "sent_messages"
@@ -37,4 +38,13 @@ async def delete_previous(bot: Bot, chat_id: int, message_id: int) -> None:
         return
 
 
-__all__ = ["delete_previous", "purge_history", "remember_message"]
+async def delete_message_safe(message: Message) -> None:
+    """Attempt to delete a message, ignoring Telegram errors."""
+
+    try:
+        await message.delete()
+    except TelegramBadRequest:
+        return
+
+
+__all__ = ["delete_message_safe", "delete_previous", "purge_history", "remember_message"]

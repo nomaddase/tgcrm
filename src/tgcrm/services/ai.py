@@ -1,53 +1,26 @@
-"""Integration layer for AI powered workflows."""
+"""Compatibility layer that proxies to the new AI assistant helpers."""
 from __future__ import annotations
 
-from openai import AsyncOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-from tgcrm.config import get_settings
 from tgcrm.db.models import Deal, InvoiceItem
-from tgcrm.db.session import AsyncSessionFactory
-from tgcrm.services.settings import get_setting
 
-_settings = get_settings()
+from .ai_assistant import get_ai_advice
 
 
-async def _resolve_client() -> AsyncOpenAI:
-    override: str | None = None
-    try:
-        async with AsyncSessionFactory() as session:
-            override = await get_setting(session, "openai_api_key")
-    except Exception:  # pragma: no cover - fallback when DB is unavailable
-        override = None
-    api_key = override or _settings.openai.api_key
-    return AsyncOpenAI(api_key=api_key)
-
-
-@retry(wait=wait_exponential(multiplier=1, min=1, max=10), stop=stop_after_attempt(3))
 async def get_advice(prompt: str) -> str:
-    """Send a prompt to the OpenAI chat completion endpoint and return the answer."""
+    """Backward compatible helper that forwards to :func:`get_ai_advice`."""
 
-    client = await _resolve_client()
-    response = await client.chat.completions.create(
-        model=_settings.openai.model,
-        messages=[
-            {"role": "system", "content": "You are an expert sales assistant."},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=_settings.openai.temperature,
-    )
-    return response.choices[0].message.content or ""
+    return await get_ai_advice(prompt)
 
 
 async def summarize_interaction(history: str, summary: str) -> str:
-    """Generate a follow-up summary for an interaction."""
+    """Generate a follow-up suggestion for a manager after an interaction."""
 
     prompt = (
         "You are assisting a sales manager. Given the past interaction history and the "
         "latest summary, produce a concise follow-up suggestion.\n\n"
         f"History:\n{history}\n\nLatest interaction:\n{summary}\n"
     )
-    return await get_advice(prompt)
+    return await get_ai_advice(prompt)
 
 
 async def build_product_consultation_prompt(item_description: str, question: str) -> str:
@@ -59,7 +32,7 @@ async def build_product_consultation_prompt(item_description: str, question: str
         f"Product: {item_description}\n"
         f"Question: {question}"
     )
-    return await get_advice(prompt)
+    return await get_ai_advice(prompt)
 
 
 async def build_advice_for_interaction(deal: Deal, interaction_type: str) -> str:
@@ -80,7 +53,7 @@ async def build_advice_for_interaction(deal: Deal, interaction_type: str) -> str
         f"Channel: {interaction_type}\n"
         f"History:\n{history}\n"
     )
-    return await get_advice(prompt)
+    return await get_ai_advice(prompt)
 
 
 async def answer_item_question(deal: Deal, line_no: int, question: str) -> str:
