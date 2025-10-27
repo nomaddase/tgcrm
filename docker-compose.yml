@@ -1,105 +1,4 @@
-x-app-env: &app-env
-  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}
-  TELEGRAM_PARSE_MODE: ${TELEGRAM_PARSE_MODE:-HTML}
-  OPENAI_API_KEY: ${OPENAI_API_KEY:?missing OPENAI_API_KEY}
-  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
-  OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.4}
-  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
-  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
-  POSTGRES_USER: ${POSTGRES_USER:-postgres}
-  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-  POSTGRES_DB: ${POSTGRES_DB:-tgcrm}
-  DB_ECHO: ${DB_ECHO:-0}
-  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-  LOG_LEVEL: ${LOG_LEVEL:-INFO}
-  WORKDAY_START: "${WORKDAY_START:-10:00}"
-  WORKDAY_END: "${WORKDAY_END:-17:00}"
-  LUNCH_START: "${LUNCH_START:-13:00}"
-  LUNCH_END: "${LUNCH_END:-14:00}"
-  SUPERVISOR_PASSWORD: ${SUPERVISOR_PASSWORD:-878707Server}
-  PROACTIVE_EXCLUDED_STATUSES: ${PROACTIVE_EXCLUDED_STATUSES:-}
-
-version: "3.9"
 services:
-  bot:
-    build: .
-    restart: unless-stopped
-    environment: *app-env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: ["python", "-m", "tgcrm.bot.main"]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
-  worker:
-    build: .
-    restart: unless-stopped
-    environment: *app-env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    command: [
-      "celery",
-      "-A",
-      "tgcrm.tasks.celery_app.celery_app",
-      "worker",
-      "--loglevel=${LOG_LEVEL:-INFO}"
-    ]
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          python - <<'PY'
-          from tgcrm.tasks.celery_app import celery_app
-          import sys
-          result = celery_app.control.ping(timeout=1)
-          sys.exit(0 if result else 1)
-          PY
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
-  beat:
-    build: .
-    restart: unless-stopped
-    environment: *app-env
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      worker:
-        condition: service_healthy
-    command: [
-      "celery",
-      "-A",
-      "tgcrm.tasks.celery_app.celery_app",
-      "beat",
-      "--loglevel=${LOG_LEVEL:-INFO}"
-    ]
-    healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'celery beat' >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 30s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
   postgres:
     image: postgres:15
     environment:
@@ -107,33 +6,59 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 10s
       timeout: 5s
       retries: 5
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
+    restart: always
+
   redis:
     image: redis:7
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - redis_data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "5"
+    restart: always
+
+  bot:
+    build: .
+    command: python -m tgcrm.bot.main
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: always
+
+  worker:
+    build: .
+    command: celery -A tgcrm.tasks.celery_app.celery_app worker --loglevel=INFO
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -h postgres || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: always
+
+  beat:
+    build: .
+    command: celery -A tgcrm.tasks.celery_app.celery_app beat --loglevel=INFO
+    env_file: .env
+    depends_on:
+      worker:
+        condition: service_started
+    restart: always
 
 volumes:
-  postgres_data:
-  redis_data:
+  pg_data:
