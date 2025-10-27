@@ -1,31 +1,37 @@
+# ==========================
+# tgcrm — финальная версия docker-compose.yml
+# ==========================
 services:
   postgres:
     image: postgres:15
+    container_name: tgcrm-postgres-1
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - pg_data:/var/lib/postgresql/data
+      POSTGRES_USER: tgcrm
+      POSTGRES_PASSWORD: tgcrm
+      POSTGRES_DB: tgcrm
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 10s
+      test: ["CMD-SHELL", "pg_isready -U tgcrm"]
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
+    volumes:
+      - tgcrm_pg_data:/var/lib/postgresql/data
     restart: always
 
   redis:
     image: redis:7
+    container_name: tgcrm-redis-1
+    command: redis-server --save 20 1 --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
+      interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
     restart: always
 
   bot:
     build: .
-    command: python -m tgcrm.bot.main
+    container_name: tgcrm-bot-1
     env_file: .env
     depends_on:
       postgres:
@@ -33,32 +39,31 @@ services:
       redis:
         condition: service_healthy
     restart: always
+    command: python -m tgcrm.bot.main
 
   worker:
     build: .
-    command: celery -A tgcrm.tasks.celery_app.celery_app worker --loglevel=INFO
+    container_name: tgcrm-worker-1
     env_file: .env
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -h postgres || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
     restart: always
+    command: celery -A tgcrm.tasks.celery_app.celery_app worker --loglevel=INFO
 
   beat:
     build: .
-    command: celery -A tgcrm.tasks.celery_app.celery_app beat --loglevel=INFO
+    container_name: tgcrm-beat-1
     env_file: .env
     depends_on:
-      worker:
-        condition: service_started
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     restart: always
+    command: celery -A tgcrm.tasks.celery_app.celery_app beat --loglevel=INFO
 
 volumes:
-  pg_data:
+  tgcrm_pg_data:
