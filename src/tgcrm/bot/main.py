@@ -4,8 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from aiogram import Dispatcher
-
 from tgcrm.bot.bot_factory import create_bot, create_dispatcher
 from tgcrm.bot.handlers import settings as settings_handlers
 from tgcrm.bot.handlers import start as start_handlers
@@ -32,17 +30,10 @@ def _ensure_token_present() -> None:
         raise RuntimeError(message)
 
 
-async def on_startup(dispatcher: Dispatcher) -> None:
-    # Register routers and any startup tasks.
-    dispatcher.include_router(start_handlers.router)
-    dispatcher.include_router(settings_handlers.router)
-
-
 async def main() -> None:
     _ensure_token_present()
     bot = create_bot()
-    dispatcher = create_dispatcher()
-    await on_startup(dispatcher)
+    dispatcher = create_dispatcher(start_handlers.router, settings_handlers.router)
     try:
         await dispatcher.start_polling(bot)
     finally:
