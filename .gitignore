@@ -1,6 +1,6 @@
+.env
 __pycache__/
 *.py[cod]
-.env
 .env.*
 *.log
 .idea/
