@@ -1,94 +1,142 @@
-"""Lightweight natural language intent parser for the CRM bot."""
+"""Natural language utilities for recognising manager intents."""
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Dict
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Optional
 
 
-class Intent(str, Enum):
-    MAIN_MENU = "main_menu"
-    CREATE_CLIENT = "create_client"
-    DEAL_SEARCH = "deal_search"
-    INTERACTION = "interaction"
-    REMINDER = "reminder"
-    STATUS_CHANGE = "status_change"
-    SUPERVISOR_REPORT = "supervisor_report"
-    SETTINGS = "settings"
-    DEAL_SUMMARY = "deal_summary"
-    INVOICE_REQUEST = "invoice_request"
-    UNKNOWN = "unknown"
+INTENT_KEYWORDS = {
+    "upload_invoice": ("pdf", "счёт", "счет", "инвойс", "документ"),
+    "set_reminder": ("напомни", "напоминание", "не забудь"),
+    "change_status": ("статус", "переведи", "обнови", "изменил", "оплачено", "отмен"),
+    "supervisor_summary": ("отчёт", "отчет", "сводк", "все сделки", "аналитику"),
+    "add_interaction": ("позвон", "отправил", "написал", "связался", "созвонились", "встретились"),
+    "settings": ("настрой", "token", "токен"),
+    "main_menu": ("меню", "главное меню"),
+    "list_deals": ("мои сделки", "список сделок"),
+}
 
-
-@dataclass
-class IntentResult:
-    intent: Intent
-    payload: Dict[str, Any]
-
-
-PHONE_REGEX = re.compile(r"\+?7[\d\s\-()]{8,}")
-FOUR_DIGITS = re.compile(r"^\D*(\d{4})\D*$")
-STATUS_REGEX = re.compile(
-    r"перев[ео]д[и]?\s+сделк[уы]?\s+(?P<identifier>\d{3,})?\s*(?:в|на)\s+(?P<status>[а-яё\s]+)",
+PHONE_PATTERN = re.compile(r"\+?7[\d\s\-()]{8,}")
+FOUR_DIGITS_PATTERN = re.compile(r"\b(\d{4})\b")
+STATUS_PATTERN = re.compile(
+    r"(?:(?:перев[ео]д[и]?|измени|поставь|статус|стало)\s*(?:сделк[аи]?\s*)?)"
+    r"(?:на|в)?\s*([а-яё\s]+)",
+    re.IGNORECASE,
+)
+RELATIVE_TIME_PATTERN = re.compile(
+    r"через\s*(?P<value>\d+)\s*(?P<unit>минут[уы]?|час[ауов]*|дн(?:я|ей)?)",
     re.IGNORECASE,
 )
 
 
-def _normalise_text(text: str | None) -> str:
-    return (text or "").strip().lower()
+def _normalise(text: str) -> str:
+    return text.strip().lower()
 
 
-def parse_intent(text: str | None) -> IntentResult:
-    """Return a best-effort intent parsed from manager input."""
+def detect_intent(message_text: str) -> str:
+    text = _normalise(message_text)
+    if not text:
+        return "add_interaction"
 
-    normalised = _normalise_text(text)
-    if not normalised:
-        return IntentResult(Intent.UNKNOWN, {})
+    if PHONE_PATTERN.fullmatch(text.replace(" ", "")):
+        return "create_client"
 
-    if "меню" in normalised:
-        return IntentResult(Intent.MAIN_MENU, {})
+    digits_match = FOUR_DIGITS_PATTERN.findall(text)
+    if digits_match and len(text) <= 10:
+        return "search_deal_by_last4"
 
-    if PHONE_REGEX.fullmatch(normalised.replace(" ", "")):
-        digits = re.sub(r"\D", "", normalised)
-        if digits.startswith("7"):
-            digits = "+" + digits
-        elif digits.startswith("77"):
-            digits = "+" + digits
-        return IntentResult(Intent.CREATE_CLIENT, {"phone": digits})
+    for intent, keywords in INTENT_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            return intent
 
-    match = FOUR_DIGITS.match(normalised)
+    if text.isdigit() and len(text) >= 4:
+        return "search_deal_by_last4"
+
+    return "add_interaction"
+
+
+def _parse_phone(text: str) -> Optional[str]:
+    digits = re.sub(r"\D", "", text)
+    if digits.startswith("7") and len(digits) >= 11:
+        return "+" + digits
+    if digits.startswith("77") and len(digits) >= 11:
+        return "+" + digits
+    return None
+
+
+def _parse_status(text: str) -> Optional[str]:
+    match = STATUS_PATTERN.search(text)
     if match:
-        return IntentResult(Intent.DEAL_SEARCH, {"suffix": match.group(1)})
-
-    if "напомни" in normalised:
-        return IntentResult(Intent.REMINDER, {"text": text.strip()})
-
-    if any(keyword in normalised for keyword in ("позвони", "звонок", "написал", "отправил", "письмо")):
-        return IntentResult(Intent.INTERACTION, {"summary": text.strip()})
-
-    status_match = STATUS_REGEX.search(normalised)
-    if status_match:
-        status = status_match.group("status").strip()
-        identifier = status_match.group("identifier")
-        payload: Dict[str, Any] = {"status": status}
-        if identifier:
-            payload["identifier"] = identifier
-        return IntentResult(Intent.STATUS_CHANGE, payload)
-
-    if "счёт" in normalised or "счет" in normalised:
-        return IntentResult(Intent.INVOICE_REQUEST, {"text": text.strip()})
-
-    if "отч" in normalised or "сводк" in normalised:
-        return IntentResult(Intent.SUPERVISOR_REPORT, {})
-
-    if "настрой" in normalised:
-        return IntentResult(Intent.SETTINGS, {})
-
-    if "мои сделки" in normalised or "список сделок" in normalised:
-        return IntentResult(Intent.DEAL_SUMMARY, {})
-
-    return IntentResult(Intent.INTERACTION, {"summary": text.strip()}) if len(normalised.split()) > 3 else IntentResult(Intent.UNKNOWN, {})
+        return match.group(1).strip()
+    return None
 
 
-__all__ = ["Intent", "IntentResult", "parse_intent"]
+def _parse_relative_time(text: str) -> Optional[datetime]:
+    now = datetime.now(timezone.utc)
+    match = RELATIVE_TIME_PATTERN.search(text)
+    if match:
+        value = int(match.group("value"))
+        unit = match.group("unit")
+        if unit.startswith("мин"):
+            return now + timedelta(minutes=value)
+        if unit.startswith("час"):
+            return now + timedelta(hours=value)
+        return now + timedelta(days=value)
+    if "завтра" in text:
+        target = now + timedelta(days=1)
+        return target.replace(hour=10, minute=0, second=0, microsecond=0)
+    if "послезавтра" in text:
+        target = now + timedelta(days=2)
+        return target.replace(hour=10, minute=0, second=0, microsecond=0)
+    return None
+
+
+def extract_entities(message_text: str) -> Dict[str, object]:
+    intent = detect_intent(message_text)
+    text = _normalise(message_text)
+
+    if intent == "create_client":
+        phone = _parse_phone(message_text)
+        return {"intent": intent, "phone": phone or message_text.strip()}
+
+    if intent == "search_deal_by_last4":
+        match = FOUR_DIGITS_PATTERN.search(text)
+        return {"intent": intent, "last4": match.group(1) if match else text[-4:]}
+
+    if intent == "change_status":
+        status = _parse_status(text)
+        identifier = None
+        digits = re.findall(r"\d{4,}", text)
+        if digits:
+            identifier = digits[-1][-4:]
+        return {"intent": intent, "status": status or text.strip(), "identifier": identifier}
+
+    if intent == "set_reminder":
+        remind_at = _parse_relative_time(text)
+        return {
+            "intent": intent,
+            "reminder_text": message_text.strip(),
+            "remind_at": remind_at,
+        }
+
+    if intent == "add_interaction":
+        return {"intent": intent, "interaction": message_text.strip()}
+
+    if intent == "main_menu":
+        return {"intent": intent}
+
+    if intent == "settings":
+        return {"intent": intent}
+
+    if intent == "list_deals":
+        return {"intent": intent}
+
+    if intent == "upload_invoice":
+        return {"intent": intent, "comment": message_text.strip()}
+
+    return {"intent": intent}
+
+
+__all__ = ["detect_intent", "extract_entities"]
+

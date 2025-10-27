@@ -1,8 +1,7 @@
 """Handlers related to deal selection and AI-assisted actions."""
 from __future__ import annotations
 
-import re
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from pathlib import Path
 
 from aiogram import Router
@@ -16,16 +15,10 @@ from tgcrm.bot.states import BotStates
 from tgcrm.bot.utils.history import delete_message_safe, purge_history, remember_message
 from tgcrm.db.models import Deal, Manager
 from tgcrm.db.session import get_session
-from tgcrm.services.ai_assistant import (
-    build_deal_advice,
-    build_reminder_tip,
-    build_status_tip,
-    summarize_invoice,
-)
+from tgcrm.services.ai_assistant import AI_PROMPTS, get_ai_assistant
 from tgcrm.services.deals import (
     attach_invoice,
     change_deal_status,
-    create_reminder,
     ensure_manager,
     get_active_deal_by_phone_suffix,
     log_interaction,
@@ -53,15 +46,34 @@ async def _load_deal_for_manager(session, deal_id: int, manager: Manager) -> Dea
     return result.scalars().first()
 
 
-def _format_history(deal: Deal) -> str:
+def _collect_history_for_ai(deal: Deal) -> list[dict[str, str]]:
     interactions = sorted(deal.interactions, key=lambda item: item.created_at or datetime.min)
-    if not interactions:
+    recent = interactions[-5:]
+    payload: list[dict[str, str]] = []
+    for interaction in recent:
+        payload.append(
+            {
+                "time": interaction.created_at.isoformat() if interaction.created_at else "",
+                "type": interaction.type,
+                "summary": interaction.manager_summary,
+            }
+        )
+    return payload
+
+
+def _format_history(deal: Deal) -> str:
+    records = _collect_history_for_ai(deal)
+    if not records:
         return "Пока нет взаимодействий"
     lines = []
-    for interaction in interactions[-5:]:
-        lines.append(
-            f"[{interaction.created_at:%Y-%m-%d %H:%M}] {interaction.type}: {interaction.manager_summary}"
-        )
+    for record in records:
+        timestamp = record.get("time")
+        try:
+            formatted = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else ""
+        except ValueError:
+            formatted = timestamp or ""
+        line = f"[{formatted}] {record.get('type')}: {record.get('summary')}".strip()
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -80,7 +92,8 @@ async def select_deal_by_suffix(message: Message, state: FSMContext, suffix: str
             return
 
         history = _format_history(deal)
-        advice = await build_deal_advice(history, deal.status)
+        assistant = get_ai_assistant()
+        advice = await assistant.generate_followup_message(_collect_history_for_ai(deal), deal.status)
         summary = (
             f"👤 {deal.client.name or deal.client.phone_number}\n"
             f"Статус: {deal.status}\n"
@@ -131,65 +144,18 @@ async def handle_interaction(message: Message, state: FSMContext, summary: str) 
             manager_summary=summary,
         )
         await session.refresh(deal, attribute_names=["last_interaction_at"])
+        assistant = get_ai_assistant()
         history = _format_history(deal)
-        advice = await build_deal_advice(history, deal.status)
+        advice_context = (
+            f"{AI_PROMPTS['deal_followup']}\n\n"
+            f"Текущий статус: {deal.status}.\n"
+            f"История:\n{history or 'нет взаимодействий'}"
+        )
+        advice = await assistant.get_ai_advice(advice_context)
 
     response = (
         "✅ Взаимодействие сохранено.\n"
         f"Совет: {advice}\n\n{render_main_menu()}"
-    )
-    sent = await message.answer(response)
-    await remember_message(state, sent.message_id)
-
-
-def _parse_reminder_time(text: str) -> datetime | None:
-    lowered = text.lower()
-    now = datetime.now(timezone.utc)
-    match = re.search(r"через\s+(\d+)\s*(час|минут|дн)", lowered)
-    if match:
-        value = int(match.group(1))
-        unit = match.group(2)
-        if unit.startswith("час"):
-            return now + timedelta(hours=value)
-        if unit.startswith("минут"):
-            return now + timedelta(minutes=value)
-        return now + timedelta(days=value)
-    if "завтра" in lowered:
-        return (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
-    return None
-
-
-async def handle_reminder(message: Message, state: FSMContext, request: str) -> None:
-    await purge_history(message.bot, message.chat.id, state)
-    await delete_message_safe(message)
-    deal_id = await _get_active_deal(state)
-    if not deal_id:
-        sent = await message.answer("Сначала выберите сделку, чтобы привязать напоминание.")
-        await remember_message(state, sent.message_id)
-        return
-
-    remind_at = _parse_reminder_time(request)
-    if not remind_at:
-        sent = await message.answer(
-            "Не понял время напоминания. Укажите, например: 'напомни через 2 часа позвонить клиенту'."
-        )
-        await remember_message(state, sent.message_id)
-        return
-
-    async with get_session() as session:
-        manager = await ensure_manager(session, message.from_user.id, name=message.from_user.full_name)
-        deal = await _load_deal_for_manager(session, deal_id, manager)
-        if not deal:
-            sent = await message.answer("Сделка не найдена. Повторите поиск клиента.")
-            await remember_message(state, sent.message_id)
-            return
-        await create_reminder(session, deal, remind_at=remind_at)
-        history = _format_history(deal)
-        tip = await build_reminder_tip(request)
-
-    response = (
-        "⏰ Напоминание создано.\n"
-        f"Совет: {tip}\n\n{render_main_menu()}"
     )
     sent = await message.answer(response)
     await remember_message(state, sent.message_id)
@@ -212,8 +178,9 @@ async def handle_status_change(message: Message, state: FSMContext, status: str)
             await remember_message(state, sent.message_id)
             return
         await change_deal_status(session, deal, status)
+        assistant = get_ai_assistant()
         overview = _format_history(deal)
-        tip = await build_status_tip(deal.status, overview)
+        tip = await assistant.generate_followup_message(_collect_history_for_ai(deal), deal.status)
 
     response = (
         "📌 Статус сделки обновлён.\n"
@@ -285,7 +252,8 @@ async def handle_invoice_upload(message: Message, state: FSMContext) -> None:
             return
         invoice = await attach_invoice(session, deal, invoice_data, str(destination))
         await session.refresh(deal, attribute_names=["status", "amount"])
-        analysis = await summarize_invoice(raw_text)
+        assistant = get_ai_assistant()
+        analysis = await assistant.summarize_invoice(raw_text)
 
     response = (
         "✅ Счёт загружен и добавлен к сделке.\n"
@@ -300,7 +268,6 @@ async def handle_invoice_upload(message: Message, state: FSMContext) -> None:
 __all__ = [
     "handle_interaction",
     "handle_invoice_upload",
-    "handle_reminder",
     "handle_status_change",
     "list_manager_deals",
     "router",
