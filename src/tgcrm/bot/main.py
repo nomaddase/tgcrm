@@ -1,81 +1,56 @@
-"""Main entrypoint for the Telegram bot."""
-from __future__ import annotations
+"""
+Главная точка входа Telegram-бота с инициализацией ChatGPT-ассистента.
+"""
 
+from __future__ import annotations
 import asyncio
 import logging
-
 from aiogram import Bot, Dispatcher
-from tgcrm.bot.bot_factory import create_bot, create_dispatcher
+
+from tgcrm.config import get_settings
+from tgcrm.logging import configure_logging
+from tgcrm.services.ai_assistant import AIService
 from tgcrm.bot.handlers import (
-    assistant as assistant_handlers,
     start as start_handlers,
     client as client_handlers,
     deal as deal_handlers,
-    settings as settings_handlers,
+    reminder as reminder_handlers,
     supervisor as supervisor_handlers,
+    settings as settings_handlers
 )
-from tgcrm.config import get_settings
-from tgcrm.logging import configure_logging
-from tgcrm.services.ai_assistant import create_ai_assistant
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
 
-def _ensure_token_present() -> None:
-    try:
-        settings = get_settings()
-    except RuntimeError as exc:
-        logger.error("Configuration error: %s", exc)
-        raise
+async def main() -> None:
+    """Запуск Telegram-бота."""
+    settings = get_settings()
 
     if not settings.telegram.bot_token.strip():
-        message = (
-            "TELEGRAM_BOT_TOKEN is empty. Please provide a valid token in the environment before starting the bot."
-        )
-        logger.error(message)
-        raise RuntimeError(message)
+        raise RuntimeError("❌ TELEGRAM_BOT_TOKEN не указан в .env")
 
+    bot = Bot(token=settings.telegram.bot_token, parse_mode=settings.telegram.parse_mode)
+    dp = Dispatcher()
 
-async def on_startup(dispatcher: Dispatcher) -> None:
-    """Hook that runs when the bot starts polling."""
-    logger.info("🤖 Bot successfully started and polling Telegram API.")
+    # Инициализация ChatGPT-сервиса
+    ai = AIService(api_key=settings.openai.api_key, model=settings.openai.model)
+    dp["ai"] = ai  # Контекстный доступ к AI в любом handler
 
+    # Регистрация всех router’ов
+    dp.include_router(start_handlers.router)
+    dp.include_router(client_handlers.router)
+    dp.include_router(deal_handlers.router)
+    dp.include_router(reminder_handlers.router)
+    dp.include_router(supervisor_handlers.router)
+    dp.include_router(settings_handlers.router)
 
-async def main() -> None:
-    _ensure_token_present()
-    bot = create_bot()
-    ai_assistant = await create_ai_assistant()
-    dispatcher = create_dispatcher(
-        start_handlers.router,
-        settings_handlers.router,
-        client_handlers.router,
-        deal_handlers.router,
-        supervisor_handlers.router,
-        assistant_handlers.router,
-    )
-    if not hasattr(dispatcher, "workflow_data"):
-        dispatcher.workflow_data = {}  # type: ignore[attr-defined]
-    dispatcher.workflow_data["ai_assistant"] = ai_assistant  # type: ignore[index]
-    setattr(bot, "ai_assistant", ai_assistant)
-
-    # Правильный хук запуска (учитываем тестовые заглушки)
-    startup_registered = False
-    if hasattr(dispatcher, "startup") and hasattr(dispatcher.startup, "register"):
-        dispatcher.startup.register(on_startup)
-        startup_registered = True
-    else:
-        await on_startup(dispatcher)
-
-    logger.info("🚀 Starting Telegram polling...")
-    try:
-        await dispatcher.start_polling(bot)
-    except Exception as e:
-        logger.exception("Polling failed: %s", e)
-    finally:
-        await bot.session.close()
-        logger.info("Bot session closed.")
+    logger.info("🚀 Бот запущен и готов к работе.")
+    await dp.start_polling(bot)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("🛑 Остановка бота.")
