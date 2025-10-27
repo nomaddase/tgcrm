@@ -1,16 +1,17 @@
-"""Handlers for client lookup and creation flows."""
+"""Handlers for client lookup and AI-assisted creation flows."""
 from __future__ import annotations
 
-from aiogram import F, Router
+from aiogram import Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
 from sqlalchemy import select
 
-from tgcrm.bot.keyboards.main import MainMenuButtons
+from tgcrm.bot.menu import render_main_menu
 from tgcrm.bot.states import BotStates
-from tgcrm.bot.utils.history import purge_history, remember_message
+from tgcrm.bot.utils.history import delete_message_safe, purge_history, remember_message
 from tgcrm.db.models import Client, Deal
 from tgcrm.db.session import get_session
+from tgcrm.services.ai_assistant import build_client_summary, build_deal_advice
 from tgcrm.services.deals import (
     create_deal_for_manager,
     ensure_manager,
@@ -23,70 +24,67 @@ from tgcrm.services.phones import PhoneValidationError, normalize_kz_phone
 router = Router()
 
 
-@router.message(F.text == MainMenuButtons.SEARCH_CLIENT)
-async def request_client_phone(message: Message, state: FSMContext) -> None:
+async def start_client_creation(message: Message, state: FSMContext, phone: str) -> None:
+    """Entry point for the AI assisted client creation flow."""
+
     await purge_history(message.bot, message.chat.id, state)
-    await state.set_state(BotStates.entering_client_phone)
-    sent = await message.answer("Введите номер телефона клиента (Казахстан, +7XXXXXXXXXX)")
-    await remember_message(state, sent.message_id)
+    await delete_message_safe(message)
 
-
-@router.message(BotStates.entering_client_phone, F.text)
-async def handle_client_phone(message: Message, state: FSMContext) -> None:
     try:
-        normalized = normalize_kz_phone(message.text or "")
+        normalized = normalize_kz_phone(phone)
     except PhoneValidationError:
-        sent = await message.answer("❌ Неверный формат. Укажите номер в виде +7XXXXXXXXXX")
+        sent = await message.answer("❌ Неверный номер. Пришлите его в формате +7XXXXXXXXXX")
         await remember_message(state, sent.message_id)
         return
 
     async with get_session() as session:
         manager = await ensure_manager(session, message.from_user.id, name=message.from_user.full_name)
-        client_result = await session.execute(select(Client).where(Client.phone_number == normalized))
-        client = client_result.scalar_one_or_none()
+        query = select(Client).where(Client.phone_number == normalized)
+        result = await session.execute(query)
+        client = result.scalar_one_or_none()
 
         if client:
             deals_result = await session.execute(
                 select(Deal).where(Deal.client_id == client.id, Deal.manager_id == manager.id)
             )
             deals = deals_result.scalars().all()
-            deals_info = ", ".join(f"#{deal.id} ({deal.status})" for deal in deals)
+            deals_info = ", ".join(f"#{deal.id} ({deal.status})" for deal in deals) or "нет сделок"
             summary = (
-                f"Клиент найден: {client.name or 'Без имени'}, город {client.city or 'не указан'}."
+                f"ℹ️ Клиент уже в базе: {client.name or 'Без имени'}, {client.city or 'город не указан'}.\n"
+                f"Ваши сделки: {deals_info}."
             )
-            if deals_info:
-                summary += f"\nВаши сделки: {deals_info}"
-            else:
-                summary += "\nУ вас пока нет сделок с этим клиентом."
-            sent = await message.answer(summary)
+            sent = await message.answer(f"{summary}\n\n{render_main_menu()}")
             await remember_message(state, sent.message_id)
             await state.set_state(BotStates.idle)
             return
 
-    await state.update_data({"new_client_phone": normalized})
     await state.set_state(BotStates.entering_new_client_name)
-    sent = await message.answer("Клиент не найден. Укажите имя клиента")
+    await state.update_data({"new_client_phone": normalized})
+    sent = await message.answer("Клиент не найден. Как зовут клиента?")
     await remember_message(state, sent.message_id)
 
 
-@router.message(BotStates.entering_new_client_name, F.text)
+@router.message(BotStates.entering_new_client_name)
 async def handle_new_client_name(message: Message, state: FSMContext) -> None:
+    await delete_message_safe(message)
     await state.update_data({"new_client_name": (message.text or "").strip()})
     await state.set_state(BotStates.entering_new_client_city)
-    sent = await message.answer("Введите город клиента")
+    sent = await message.answer("Укажите город клиента")
     await remember_message(state, sent.message_id)
 
 
-@router.message(BotStates.entering_new_client_city, F.text)
+@router.message(BotStates.entering_new_client_city)
 async def handle_new_client_city(message: Message, state: FSMContext) -> None:
+    await delete_message_safe(message)
     await state.update_data({"new_client_city": (message.text or "").strip()})
     await state.set_state(BotStates.entering_new_client_demand)
-    sent = await message.answer("Опишите первичный запрос клиента")
+    sent = await message.answer("Что интересует клиента?")
     await remember_message(state, sent.message_id)
 
 
-@router.message(BotStates.entering_new_client_demand, F.text)
+@router.message(BotStates.entering_new_client_demand)
 async def handle_new_client_demand(message: Message, state: FSMContext) -> None:
+    await delete_message_safe(message)
     data = await state.get_data()
     demand = (message.text or "").strip()
     phone = data.get("new_client_phone")
@@ -105,13 +103,16 @@ async def handle_new_client_demand(message: Message, state: FSMContext) -> None:
             manager_summary=demand,
         )
 
+    summary = await build_client_summary(name, city, demand)
+    advice = await build_deal_advice(demand, "Новый")
+    response = (
+        "✅ Клиент создан и сделка закреплена за вами.\n"
+        f"{summary}\n\nСовет: {advice}\n\n{render_main_menu()}"
+    )
     await state.set_state(BotStates.idle)
     await state.set_data({})
-    sent = await message.answer(
-        (
-            "✅ Клиент создан и привязан к вам.\n"
-            f"Имя: {name or 'не указано'}\nГород: {city or 'не указан'}\n"
-            "Создана сделка в статусе 'Новый'."
-        )
-    )
+    sent = await message.answer(response)
     await remember_message(state, sent.message_id)
+
+
+__all__ = ["router", "start_client_creation"]

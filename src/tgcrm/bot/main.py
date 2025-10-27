@@ -7,6 +7,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from tgcrm.bot.bot_factory import create_bot, create_dispatcher
 from tgcrm.bot.handlers import (
+    assistant as assistant_handlers,
     start as start_handlers,
     client as client_handlers,
     deal as deal_handlers,
@@ -49,10 +50,16 @@ async def main() -> None:
         client_handlers.router,
         deal_handlers.router,
         supervisor_handlers.router,
+        assistant_handlers.router,
     )
 
-    # Правильный хук запуска
-    dispatcher.startup.register(on_startup)
+    # Правильный хук запуска (учитываем тестовые заглушки)
+    startup_registered = False
+    if hasattr(dispatcher, "startup") and hasattr(dispatcher.startup, "register"):
+        dispatcher.startup.register(on_startup)
+        startup_registered = True
+    else:
+        await on_startup(dispatcher)
 
     logger.info("🚀 Starting Telegram polling...")
     try:
