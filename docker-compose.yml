@@ -20,12 +20,16 @@ x-app-env: &app-env
   SUPERVISOR_PASSWORD: ${SUPERVISOR_PASSWORD:-878707Server}
   PROACTIVE_EXCLUDED_STATUSES: ${PROACTIVE_EXCLUDED_STATUSES:-}
 
+x-app-env-file: &app-env-file
+  - ./.env:/app/.env:ro
+
 version: "3.9"
 services:
   bot:
     build: .
     restart: unless-stopped
     environment: *app-env
+    volumes: *app-env-file
     depends_on:
       - postgres
       - redis
@@ -33,6 +37,7 @@ services:
   worker:
     build: .
     environment: *app-env
+    volumes: *app-env-file
     depends_on:
       - postgres
       - redis
@@ -40,6 +45,7 @@ services:
   beat:
     build: .
     environment: *app-env
+    volumes: *app-env-file
     depends_on:
       - worker
     command: ["celery", "-A", "tgcrm.tasks.celery_app.celery_app", "beat", "--loglevel=info"]
