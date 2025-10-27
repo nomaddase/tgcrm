@@ -15,7 +15,7 @@ from tgcrm.bot.states import BotStates
 from tgcrm.bot.utils.history import delete_message_safe, purge_history, remember_message
 from tgcrm.db.models import Deal, Manager
 from tgcrm.db.session import get_session
-from tgcrm.services.ai_assistant import AI_PROMPTS, get_ai_assistant
+from tgcrm.services.ai_assistant import generate_followup_message, summarize_invoice
 from tgcrm.services.deals import (
     attach_invoice,
     change_deal_status,
@@ -59,24 +59,6 @@ def _collect_history_for_ai(deal: Deal) -> list[dict[str, str]]:
             }
         )
     return payload
-
-
-def _format_history(deal: Deal) -> str:
-    records = _collect_history_for_ai(deal)
-    if not records:
-        return "Пока нет взаимодействий"
-    lines = []
-    for record in records:
-        timestamp = record.get("time")
-        try:
-            formatted = datetime.fromisoformat(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else ""
-        except ValueError:
-            formatted = timestamp or ""
-        line = f"[{formatted}] {record.get('type')}: {record.get('summary')}".strip()
-        lines.append(line)
-    return "\n".join(lines)
-
-
 async def select_deal_by_suffix(message: Message, state: FSMContext, suffix: str) -> None:
     await purge_history(message.bot, message.chat.id, state)
     await delete_message_safe(message)
@@ -91,9 +73,7 @@ async def select_deal_by_suffix(message: Message, state: FSMContext, suffix: str
             await remember_message(state, sent.message_id)
             return
 
-        history = _format_history(deal)
-        assistant = get_ai_assistant()
-        advice = await assistant.generate_followup_message(_collect_history_for_ai(deal), deal.status)
+        advice = await generate_followup_message(_collect_history_for_ai(deal), deal.status)
         summary = (
             f"👤 {deal.client.name or deal.client.phone_number}\n"
             f"Статус: {deal.status}\n"
@@ -144,14 +124,7 @@ async def handle_interaction(message: Message, state: FSMContext, summary: str) 
             manager_summary=summary,
         )
         await session.refresh(deal, attribute_names=["last_interaction_at"])
-        assistant = get_ai_assistant()
-        history = _format_history(deal)
-        advice_context = (
-            f"{AI_PROMPTS['deal_followup']}\n\n"
-            f"Текущий статус: {deal.status}.\n"
-            f"История:\n{history or 'нет взаимодействий'}"
-        )
-        advice = await assistant.get_ai_advice(advice_context)
+        advice = await generate_followup_message(_collect_history_for_ai(deal), deal.status)
 
     response = (
         "✅ Взаимодействие сохранено.\n"
@@ -178,9 +151,7 @@ async def handle_status_change(message: Message, state: FSMContext, status: str)
             await remember_message(state, sent.message_id)
             return
         await change_deal_status(session, deal, status)
-        assistant = get_ai_assistant()
-        overview = _format_history(deal)
-        tip = await assistant.generate_followup_message(_collect_history_for_ai(deal), deal.status)
+        tip = await generate_followup_message(_collect_history_for_ai(deal), deal.status)
 
     response = (
         "📌 Статус сделки обновлён.\n"
@@ -252,8 +223,7 @@ async def handle_invoice_upload(message: Message, state: FSMContext) -> None:
             return
         invoice = await attach_invoice(session, deal, invoice_data, str(destination))
         await session.refresh(deal, attribute_names=["status", "amount"])
-        assistant = get_ai_assistant()
-        analysis = await assistant.summarize_invoice(raw_text)
+        analysis = await summarize_invoice(raw_text)
 
     response = (
         "✅ Счёт загружен и добавлен к сделке.\n"

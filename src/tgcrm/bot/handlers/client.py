@@ -11,7 +11,7 @@ from tgcrm.bot.states import BotStates
 from tgcrm.bot.utils.history import delete_message_safe, purge_history, remember_message
 from tgcrm.db.models import Client, Deal
 from tgcrm.db.session import get_session
-from tgcrm.services.ai_assistant import AI_PROMPTS, get_ai_assistant
+from tgcrm.services.ai_assistant import generate_followup_message, summarize_client_profile
 from tgcrm.services.deals import (
     create_deal_for_manager,
     ensure_manager,
@@ -103,16 +103,15 @@ async def handle_new_client_demand(message: Message, state: FSMContext) -> None:
             manager_summary=demand,
         )
 
-    assistant = get_ai_assistant()
-    summary = await assistant.summarize_client_profile(
-        {"name": name, "city": city, "interest": demand}
-    )
-    advice_context = (
-        f"{AI_PROMPTS['deal_followup']}\n\n"
-        f"Статус: Новый клиент.\n"
-        f"Интерес: {demand or 'не указан'}."
-    )
-    advice = await assistant.get_ai_advice(advice_context)
+    summary = await summarize_client_profile({"name": name, "city": city, "interest": demand})
+    advice_history = [
+        {
+            "time": "",
+            "type": "первичный спрос",
+            "summary": demand or "интерес не указан",
+        }
+    ]
+    advice = await generate_followup_message(advice_history, "Новый клиент")
     response = (
         "✅ Клиент создан и сделка закреплена за вами.\n"
         f"{summary}\n\nСовет: {advice}\n\n{render_main_menu()}"
