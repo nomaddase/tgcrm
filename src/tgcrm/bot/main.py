@@ -43,7 +43,10 @@ async def main() -> None:
     bot = create_bot()
     dispatcher = create_dispatcher()
     await on_startup(dispatcher)
-    await dispatcher.start_polling(bot)
+    try:
+        await dispatcher.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 
 if __name__ == "__main__":
