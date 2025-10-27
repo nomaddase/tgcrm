@@ -1,24 +1,45 @@
+x-app-env: &app-env
+  TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?missing TELEGRAM_BOT_TOKEN}
+  TELEGRAM_PARSE_MODE: ${TELEGRAM_PARSE_MODE:-HTML}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:?missing OPENAI_API_KEY}
+  OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o}
+  OPENAI_TEMPERATURE: ${OPENAI_TEMPERATURE:-0.4}
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  POSTGRES_USER: ${POSTGRES_USER:-postgres}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+  POSTGRES_DB: ${POSTGRES_DB:-tgcrm}
+  DB_ECHO: ${DB_ECHO:-0}
+  REDIS_HOST: ${REDIS_HOST:-redis}
+  REDIS_PORT: ${REDIS_PORT:-6379}
+  REDIS_DB: ${REDIS_DB:-0}
+  WORKDAY_START: "${WORKDAY_START:-10:00}"
+  WORKDAY_END: "${WORKDAY_END:-17:00}"
+  LUNCH_START: "${LUNCH_START:-13:00}"
+  LUNCH_END: "${LUNCH_END:-14:00}"
+  SUPERVISOR_PASSWORD: ${SUPERVISOR_PASSWORD:-878707Server}
+  PROACTIVE_EXCLUDED_STATUSES: ${PROACTIVE_EXCLUDED_STATUSES:-}
+
 version: "3.9"
 services:
   bot:
     build: .
     restart: unless-stopped
-    volumes:
-      - ./.env:/app/.env
+    environment: *app-env
     depends_on:
       - postgres
       - redis
     command: ["python", "-m", "tgcrm.bot.main"]
   worker:
     build: .
-    env_file: .env
+    environment: *app-env
     depends_on:
       - postgres
       - redis
     command: ["celery", "-A", "tgcrm.tasks.celery_app.celery_app", "worker", "--loglevel=info"]
   beat:
     build: .
-    env_file: .env
+    environment: *app-env
     depends_on:
       - worker
     command: ["celery", "-A", "tgcrm.tasks.celery_app.celery_app", "beat", "--loglevel=info"]

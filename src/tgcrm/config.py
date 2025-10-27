@@ -4,25 +4,28 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List, Optional
 
-from pydantic import Field, validator
+from dotenv import load_dotenv
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+load_dotenv()
 
 
 class TelegramSettings(BaseSettings):
     """Settings related to the Telegram bot."""
 
-    bot_token: str = Field(..., env="TELEGRAM_BOT_TOKEN")
-    parse_mode: str = Field("HTML", env="TELEGRAM_PARSE_MODE")
+    bot_token: str = Field(..., validation_alias="TELEGRAM_BOT_TOKEN")
+    parse_mode: str = Field("HTML", validation_alias="TELEGRAM_PARSE_MODE")
 
 
 class OpenAISettings(BaseSettings):
     """Settings for communicating with the OpenAI API."""
 
-    api_key: str = Field(..., env="OPENAI_API_KEY")
-    model: str = Field("gpt-4o", env="OPENAI_MODEL")
-    temperature: float = Field(0.4, env="OPENAI_TEMPERATURE")
+    api_key: str = Field(..., validation_alias="OPENAI_API_KEY")
+    model: str = Field("gpt-4o", validation_alias="OPENAI_MODEL")
+    temperature: float = Field(0.4, validation_alias="OPENAI_TEMPERATURE")
 
-    @validator("temperature")
+    @field_validator("temperature")
     def validate_temperature(cls, value: float) -> float:
         if not 0 <= value <= 2:
             raise ValueError("temperature must be between 0 and 2")
@@ -32,12 +35,12 @@ class OpenAISettings(BaseSettings):
 class DatabaseSettings(BaseSettings):
     """Database connection configuration."""
 
-    host: str = Field("localhost", env="POSTGRES_HOST")
-    port: int = Field(5432, env="POSTGRES_PORT")
-    user: str = Field("postgres", env="POSTGRES_USER")
-    password: str = Field("postgres", env="POSTGRES_PASSWORD")
-    name: str = Field("tgcrm", env="POSTGRES_DB")
-    echo: bool = Field(False, env="DB_ECHO")
+    host: str = Field("localhost", validation_alias="POSTGRES_HOST")
+    port: int = Field(5432, validation_alias="POSTGRES_PORT")
+    user: str = Field("postgres", validation_alias="POSTGRES_USER")
+    password: str = Field("postgres", validation_alias="POSTGRES_PASSWORD")
+    name: str = Field("tgcrm", validation_alias="POSTGRES_DB")
+    echo: bool = Field(False, validation_alias="DB_ECHO")
 
     @property
     def async_dsn(self) -> str:
@@ -53,9 +56,9 @@ class DatabaseSettings(BaseSettings):
 class RedisSettings(BaseSettings):
     """Redis connection settings used by Celery and reminders."""
 
-    host: str = Field("localhost", env="REDIS_HOST")
-    port: int = Field(6379, env="REDIS_PORT")
-    db: int = Field(0, env="REDIS_DB")
+    host: str = Field("localhost", validation_alias="REDIS_HOST")
+    port: int = Field(6379, validation_alias="REDIS_PORT")
+    db: int = Field(0, validation_alias="REDIS_DB")
 
     @property
     def dsn(self) -> str:
@@ -65,23 +68,25 @@ class RedisSettings(BaseSettings):
 class BotBehaviourSettings(BaseSettings):
     """Runtime configuration for bot behaviour rules."""
 
-    workday_start: str = Field("10:00", env="WORKDAY_START")
-    workday_end: str = Field("17:00", env="WORKDAY_END")
-    lunch_start: str = Field("13:00", env="LUNCH_START")
-    lunch_end: str = Field("14:00", env="LUNCH_END")
-    supervisor_password: str = Field("878707Server", env="SUPERVISOR_PASSWORD")
-    proactive_excluded_statuses: List[str] = Field(
+    workday_start: str = Field("10:00", validation_alias="WORKDAY_START")
+    workday_end: str = Field("17:00", validation_alias="WORKDAY_END")
+    lunch_start: str = Field("13:00", validation_alias="LUNCH_START")
+    lunch_end: str = Field("14:00", validation_alias="LUNCH_END")
+    supervisor_password: str = Field("878707Server", validation_alias="SUPERVISOR_PASSWORD")
+    proactive_excluded_statuses: List[str] | str = Field(
         default_factory=lambda: ["долгосрочная", "отмененная", "оплаченная"],
-        env="PROACTIVE_EXCLUDED_STATUSES",
+        validation_alias="PROACTIVE_EXCLUDED_STATUSES",
     )
 
-    @validator("proactive_excluded_statuses", pre=True)
-    def parse_statuses(cls, value: Optional[str]) -> List[str]:
+    @field_validator("proactive_excluded_statuses", mode="before")
+    def parse_statuses(cls, value: Optional[List[str] | str]) -> List[str]:
         if value is None:
             return ["долгосрочная", "отмененная", "оплаченная"]
         if isinstance(value, str):
             return [status.strip() for status in value.split(",") if status.strip()]
-        return value
+        if isinstance(value, list):
+            return value
+        raise TypeError("proactive_excluded_statuses must be a list or a comma separated string")
 
 
 class Settings(BaseSettings):
@@ -93,7 +98,7 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     behaviour: BotBehaviourSettings = Field(default_factory=BotBehaviourSettings)
 
-    model_config = SettingsConfigDict(env_file="/app/.env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(extra="ignore")
 
 
 @lru_cache()
